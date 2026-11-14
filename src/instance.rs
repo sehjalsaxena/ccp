@@ -64,6 +64,10 @@ pub fn is_ccp_pid_alive(pid_str: &str) -> bool {
         return false;
     }
 
+    if pid == std::process::id() {
+        return true;
+    }
+
     use std::process::Command;
 
     // 1. Signal 0 test: checks if process exists and user has permission to signal it
@@ -77,6 +81,20 @@ pub fn is_ccp_pid_alive(pid_str: &str) -> bool {
         return false;
     }
 
+    // Determine allowed process names: "ccp" and current executable file stem
+    let mut allowed_names = vec!["ccp".to_string()];
+    if let Ok(exe_path) = std::env::current_exe()
+        && let Some(stem) = exe_path.file_stem()
+    {
+        let stem_str = stem.to_string_lossy().to_lowercase();
+        if !stem_str.is_empty() {
+            allowed_names.push(stem_str.clone());
+            if stem_str.len() > 15 {
+                allowed_names.push(stem_str[..15].to_string());
+            }
+        }
+    }
+
     // 2. Process name check via ps
     let ps_output = Command::new("ps")
         .args(["-p", &pid.to_string(), "-o", "comm="])
@@ -86,13 +104,26 @@ pub fn is_ccp_pid_alive(pid_str: &str) -> bool {
         && out.status.success()
     {
         let comm = String::from_utf8_lossy(&out.stdout).to_lowercase();
-        return comm.contains("ccp");
+        let comm_trimmed = comm.trim();
+        if allowed_names
+            .iter()
+            .any(|allowed| comm_trimmed.contains(allowed))
+        {
+            return true;
+        }
     }
 
     // Fallback on Linux: check /proc/<pid>/comm
     #[cfg(target_os = "linux")]
     if let Ok(comm) = std::fs::read_to_string(format!("/proc/{pid}/comm")) {
-        return comm.to_lowercase().contains("ccp");
+        let comm_trimmed = comm.to_lowercase();
+        let comm_trimmed = comm_trimmed.trim();
+        if allowed_names
+            .iter()
+            .any(|allowed| comm_trimmed.contains(allowed))
+        {
+            return true;
+        }
     }
 
     false

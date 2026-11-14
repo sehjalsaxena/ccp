@@ -7,6 +7,38 @@ use std::sync::Mutex;
 
 static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
+fn read_full_http_request(stream: &mut std::net::TcpStream) -> String {
+    let mut data = Vec::new();
+    let mut buf = [0u8; 1024];
+
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                data.extend_from_slice(&buf[..n]);
+                if let Some(pos) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&data[..pos]);
+                    let mut content_length = 0;
+                    for line in headers.lines() {
+                        if line.to_lowercase().starts_with("content-length:")
+                            && let Some(val) = line.split(':').nth(1)
+                        {
+                            content_length = val.trim().parse::<usize>().unwrap_or(0);
+                        }
+                    }
+                    let body_len = data.len() - (pos + 4);
+                    if body_len >= content_length {
+                        break;
+                    }
+                }
+            }
+            Err(_) => break,
+        }
+    }
+
+    String::from_utf8_lossy(&data).to_string()
+}
+
 #[test]
 fn test_integration_instance_lock_mutual_exclusion() {
     let _guard = TEST_MUTEX.lock().unwrap();
@@ -90,8 +122,7 @@ fn test_integration_daemon_circuit_breaker_on_bad_password() {
     let handle = std::thread::spawn(move || {
         // Step 1: Probe request -> 302 Found redirect to /login.xml
         if let Ok((mut stream1, _)) = listener.accept() {
-            let mut buf = [0u8; 2048];
-            let _ = stream1.read(&mut buf);
+            let _ = read_full_http_request(&mut stream1);
             let redirect_response = format!(
                 "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{port}/httpclient.html\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
             );
@@ -101,8 +132,7 @@ fn test_integration_daemon_circuit_breaker_on_bad_password() {
 
         // Step 2: Accept POST /login.xml and reply with Sophos failure XML
         if let Ok((mut stream2, _)) = listener.accept() {
-            let mut buf = [0u8; 4096];
-            let _ = stream2.read(&mut buf);
+            let _ = read_full_http_request(&mut stream2);
             let xml_body = "<requestresponse><status><![CDATA[FAIL]]></status><message><![CDATA[Make sure your password is correct]]></message></requestresponse>";
             let login_response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: text/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -189,8 +219,7 @@ fn test_integration_daemon_live_credential_reload() {
     let handle = std::thread::spawn(move || {
         // Step 1: Probe request -> 302 Found redirect
         if let Ok((mut stream1, _)) = listener.accept() {
-            let mut buf = [0u8; 2048];
-            let _ = stream1.read(&mut buf);
+            let _ = read_full_http_request(&mut stream1);
             let redirect_response = format!(
                 "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{port}/httpclient.html\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
             );
@@ -200,9 +229,7 @@ fn test_integration_daemon_live_credential_reload() {
 
         // Step 2: Accept POST /login.xml and verify reloaded credentials were used
         if let Ok((mut stream2, _)) = listener.accept() {
-            let mut buf = [0u8; 4096];
-            let n = stream2.read(&mut buf).unwrap_or(0);
-            let req_str = String::from_utf8_lossy(&buf[..n]);
+            let req_str = read_full_http_request(&mut stream2);
             assert!(
                 req_str.contains("fresh_user") && req_str.contains("fresh_pass"),
                 "Daemon must use live reloaded credentials from credentials.txt: {}",
@@ -258,8 +285,7 @@ fn test_integration_daemon_expanded_circuit_breaker_keywords() {
     let handle = std::thread::spawn(move || {
         // Step 1: Probe request -> 302 Found redirect
         if let Ok((mut stream1, _)) = listener.accept() {
-            let mut buf = [0u8; 2048];
-            let _ = stream1.read(&mut buf);
+            let _ = read_full_http_request(&mut stream1);
             let redirect_response = format!(
                 "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{port}/httpclient.html\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
             );
@@ -269,8 +295,7 @@ fn test_integration_daemon_expanded_circuit_breaker_keywords() {
 
         // Step 2: Sophos failure XML with "Account expired"
         if let Ok((mut stream2, _)) = listener.accept() {
-            let mut buf = [0u8; 4096];
-            let _ = stream2.read(&mut buf);
+            let _ = read_full_http_request(&mut stream2);
             let xml_body = "<requestresponse><status><![CDATA[FAIL]]></status><message><![CDATA[Your account expired on 2026-11-01]]></message></requestresponse>";
             let login_response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: text/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",

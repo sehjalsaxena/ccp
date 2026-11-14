@@ -306,14 +306,17 @@ pub fn stop_daemon(config_dir: &Path) -> Result<(), String> {
         return Ok(());
     }
 
-    let state = DaemonState::load(&state_path);
-    let mut pid = state.pid;
-
-    if pid == 0
-        && lock_path.exists()
+    // Authoritatively read PID from daemon.lock first, falling back to state.json
+    let mut pid = 0;
+    if lock_path.exists()
         && let Ok(c) = std::fs::read_to_string(&lock_path)
     {
         pid = c.trim().parse::<u32>().unwrap_or(0);
+    }
+
+    if pid == 0 {
+        let state = DaemonState::load(&state_path);
+        pid = state.pid;
     }
 
     if pid > 0 {
@@ -333,16 +336,10 @@ pub fn stop_daemon(config_dir: &Path) -> Result<(), String> {
 
         #[cfg(not(target_os = "windows"))]
         {
-            let comm = std::process::Command::new("ps")
-                .args(["-p", &pid.to_string(), "-o", "comm="])
-                .output();
-            if let Ok(out) = comm {
-                let name = String::from_utf8_lossy(&out.stdout).to_lowercase();
-                if name.contains("ccp") {
-                    let _ = std::process::Command::new("kill")
-                        .arg(pid.to_string())
-                        .output();
-                }
+            if instance::is_ccp_pid_alive(&pid.to_string()) {
+                let _ = std::process::Command::new("kill")
+                    .arg(pid.to_string())
+                    .output();
             }
         }
 
