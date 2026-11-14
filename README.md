@@ -37,7 +37,7 @@ ccp
 ```
 
 ### 3. Autonomous Background Daemon
-Run `ccp` as an autonomous background service that continuously monitors network status, auto-authenticates across subnets (Hostel ↔ College roaming), and reconnects silently on wake-from-sleep:
+Run `ccp` as an autonomous background service that continuously monitors network status, auto-authenticates across subnets (Hostel <-> College roaming), and reconnects silently on wake-from-sleep:
 
 ```bash
 # Start the background daemon

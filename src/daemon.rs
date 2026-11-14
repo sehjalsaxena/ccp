@@ -165,7 +165,9 @@ pub fn run_daemon(
                                         5 * (1u64
                                             << (state.failure_streak.saturating_sub(1).min(6))),
                                     );
-                                    std::thread::sleep(Duration::from_secs(backoff));
+                                    if !once {
+                                        std::thread::sleep(Duration::from_secs(backoff));
+                                    }
                                 }
                             }
                         }
@@ -212,6 +214,14 @@ pub fn start_background_daemon(config_dir: &Path) -> Result<(), String> {
 
     cmd.spawn()
         .map_err(|e| format!("Failed to spawn background daemon: {e}"))?;
+
+    // Poll every 25ms up to 20 times (500ms max) for lock acquisition
+    for _ in 0..20 {
+        if instance::is_daemon_running(&lock_path) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
 
     println!("Background daemon started successfully.");
     Ok(())
