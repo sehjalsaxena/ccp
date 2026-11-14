@@ -411,7 +411,8 @@ pub fn print_status(config_dir: &Path) {
 }
 
 /// Configures operating system autostart on system boot/login.
-pub fn set_autostart(enable: bool) -> Result<(), String> {
+pub fn set_autostart(config_dir: &Path, enable: bool) -> Result<(), String> {
+    let _ = config_dir;
     let exe = std::env::current_exe().map_err(|e| format!("Failed to get exe path: {e}"))?;
     let exe_str = exe.to_string_lossy();
 
@@ -523,6 +524,11 @@ pub fn set_autostart(enable: bool) -> Result<(), String> {
         let service_path = systemd_dir.join("ccp.service");
 
         if enable {
+            let lock_path = config_dir.join("daemon.lock");
+            if instance::is_daemon_running(&lock_path) {
+                let _ = stop_daemon(config_dir);
+            }
+
             std::fs::create_dir_all(&systemd_dir)
                 .map_err(|e| format!("Failed to create systemd user dir: {e}"))?;
             let service_content = format!(

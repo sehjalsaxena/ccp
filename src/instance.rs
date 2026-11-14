@@ -56,40 +56,82 @@ pub fn acquire(lock_path: &Path) -> Result<SingleInstanceLock, String> {
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn acquire(lock_path: &Path) -> Result<SingleInstanceLock, String> {
+pub fn is_ccp_pid_alive(pid_str: &str) -> bool {
+    let Ok(pid) = pid_str.trim().parse::<u32>() else {
+        return false;
+    };
+    if pid == 0 {
+        return false;
+    }
+
     use std::process::Command;
 
+    // 1. Signal 0 test: checks if process exists and user has permission to signal it
+    let alive = Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false);
+
+    if !alive {
+        return false;
+    }
+
+    // 2. Process name check via ps
+    let ps_output = Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "comm="])
+        .output();
+
+    if let Ok(out) = ps_output
+        && out.status.success()
+    {
+        let comm = String::from_utf8_lossy(&out.stdout).to_lowercase();
+        return comm.contains("ccp");
+    }
+
+    // Fallback on Linux: check /proc/<pid>/comm
+    #[cfg(target_os = "linux")]
+    if let Ok(comm) = std::fs::read_to_string(format!("/proc/{pid}/comm")) {
+        return comm.to_lowercase().contains("ccp");
+    }
+
+    false
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn acquire(lock_path: &Path) -> Result<SingleInstanceLock, String> {
     if let Some(parent) = lock_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
 
     if lock_path.exists() {
         if let Ok(content) = std::fs::read_to_string(lock_path) {
-            let pid_str = content.trim();
-            if !pid_str.is_empty() {
-                let is_alive = Command::new("kill")
-                    .args(["-0", pid_str])
-                    .output()
-                    .map(|out| out.status.success())
-                    .unwrap_or(false);
-
-                if is_alive {
-                    return Err(format!("Daemon is already running (PID {pid_str})."));
-                }
+            if is_ccp_pid_alive(&content) {
+                return Err(format!(
+                    "Daemon is already running (PID {}).",
+                    content.trim()
+                ));
             }
         }
+        // Stale lock file from a dead process or recycled PID -> remove it safely
+        let _ = std::fs::remove_file(lock_path);
     }
 
     let mut file = std::fs::OpenOptions::new()
         .write(true)
-        .create(true)
+        .create_new(true)
         .open(lock_path)
-        .map_err(|e| format!("Failed to create instance lock: {e}"))?;
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                "Daemon is already running (exclusive file lock held).".to_string()
+            } else {
+                format!("Failed to create instance lock: {e}")
+            }
+        })?;
 
     let pid = std::process::id();
     let payload = format!("{pid}\n");
     let _ = file.write_all(payload.as_bytes());
-    let _ = file.set_len(payload.len() as u64);
     let _ = file.flush();
 
     Ok(SingleInstanceLock {
@@ -126,21 +168,12 @@ pub fn is_daemon_running(lock_path: &Path) -> bool {
 
 #[cfg(not(target_os = "windows"))]
 pub fn is_daemon_running(lock_path: &Path) -> bool {
-    use std::process::Command;
-
     if !lock_path.exists() {
         return false;
     }
 
     if let Ok(content) = std::fs::read_to_string(lock_path) {
-        let pid_str = content.trim();
-        if !pid_str.is_empty() {
-            return Command::new("kill")
-                .args(["-0", pid_str])
-                .output()
-                .map(|out| out.status.success())
-                .unwrap_or(false);
-        }
+        return is_ccp_pid_alive(&content);
     }
 
     false

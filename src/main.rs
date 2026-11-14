@@ -95,13 +95,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 6. Autostart configuration: `ccp autostart [enable|disable]`
     if args.len() > 1 && args[1] == "autostart" {
+        let config_dir = get_config_dir();
         if args.len() > 2 && args[2] == "enable" {
-            if let Err(e) = daemon::set_autostart(true) {
+            if let Err(e) = daemon::set_autostart(&config_dir, true) {
                 eprintln!("[ERROR] {e}");
                 return Err(e.into());
             }
         } else if args.len() > 2 && args[2] == "disable" {
-            if let Err(e) = daemon::set_autostart(false) {
+            if let Err(e) = daemon::set_autostart(&config_dir, false) {
                 eprintln!("[ERROR] {e}");
                 return Err(e.into());
             }
