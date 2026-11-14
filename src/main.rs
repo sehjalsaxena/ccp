@@ -1,4 +1,6 @@
+use ccp::daemon;
 use ccp::probe::{self, ProbeResult};
+use ccp::state::DaemonState;
 use ccp::wifi;
 use std::env;
 use std::fs::{self, File};
@@ -9,7 +11,7 @@ use std::time::Duration;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
 
-    // Save credentials when `ccp set` is used.
+    // 1. Save credentials: `ccp set`
     if args.len() > 1 && args[1] == "set" {
         let mut username = String::new();
 
@@ -31,31 +33,94 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         writeln!(file, "{}", username)?;
         writeln!(file, "{}", password)?;
 
+        // Reset daemon circuit breaker on new credentials
+        let state_path = get_config_dir().join("state.json");
+        DaemonState::reset_circuit_breaker(&state_path);
+
         println!("Credentials saved successfully.");
         return Ok(());
     }
 
-    // Default: load saved credentials and authenticate.
+    // 2. Start background daemon: `ccp start`
+    if args.len() > 1 && args[1] == "start" {
+        if let Err(e) = load_credentials() {
+            eprintln!("{e}");
+            return Err(e.into());
+        }
+        let config_dir = get_config_dir();
+        if let Err(e) = daemon::start_background_daemon(&config_dir) {
+            eprintln!("[ERROR] {e}");
+            return Err(e.into());
+        }
+        return Ok(());
+    }
+
+    // 3. Stop background daemon: `ccp stop`
+    if args.len() > 1 && args[1] == "stop" {
+        let config_dir = get_config_dir();
+        if let Err(e) = daemon::stop_daemon(&config_dir) {
+            eprintln!("[ERROR] {e}");
+            return Err(e.into());
+        }
+        return Ok(());
+    }
+
+    // 4. Print status: `ccp status`
+    if args.len() > 1 && args[1] == "status" {
+        let config_dir = get_config_dir();
+        daemon::print_status(&config_dir);
+        return Ok(());
+    }
+
+    // 5. Run daemon loop: `ccp daemon [--once] [--dry-run]`
+    if args.len() > 1 && args[1] == "daemon" {
+        let (username, password) = match load_credentials() {
+            Ok(creds) => creds,
+            Err(e) => {
+                eprintln!("{e}");
+                return Err(e.into());
+            }
+        };
+
+        let once = args.iter().any(|arg| arg == "--once");
+        let dry_run = args.iter().any(|arg| arg == "--dry-run");
+
+        let config_dir = get_config_dir();
+        if let Err(e) = daemon::run_daemon(&config_dir, &username, &password, once, dry_run) {
+            eprintln!("[ERROR] Daemon error: {e}");
+            return Err(e.into());
+        }
+        return Ok(());
+    }
+
+    // 6. Autostart configuration: `ccp autostart [enable|disable]`
+    if args.len() > 1 && args[1] == "autostart" {
+        if args.len() > 2 && args[2] == "enable" {
+            if let Err(e) = daemon::set_autostart(true) {
+                eprintln!("[ERROR] {e}");
+                return Err(e.into());
+            }
+        } else if args.len() > 2 && args[2] == "disable" {
+            if let Err(e) = daemon::set_autostart(false) {
+                eprintln!("[ERROR] {e}");
+                return Err(e.into());
+            }
+        } else {
+            eprintln!("Usage: ccp autostart [enable|disable]");
+            return Err("Invalid autostart arguments.".into());
+        }
+        return Ok(());
+    }
+
+    // Default (args.len() == 1): load saved credentials and authenticate immediately
     if args.len() == 1 {
-        let path = credentials_path();
-
-        if !Path::new(&path).exists() {
-            eprintln!("Credentials not found. Run `ccp set` first.");
-            return Err("Credentials not found. Run `ccp set` first.".into());
-        }
-
-        let mut file = File::open(&path)?;
-        let mut contents = String::new();
-        file.read_to_string(&mut contents)?;
-
-        let mut lines = contents.lines();
-        let username = lines.next().unwrap_or("").trim();
-        let password = lines.next().unwrap_or("").trim();
-
-        if username.is_empty() || password.is_empty() {
-            eprintln!("Username or password missing in credentials file.");
-            return Err("Username or password missing in credentials file.".into());
-        }
+        let (username, password) = match load_credentials() {
+            Ok(creds) => creds,
+            Err(e) => {
+                eprintln!("{e}");
+                return Err(e.into());
+            }
+        };
 
         let cached_gateway = get_cached_gateway();
         let client = probe::build_fast_client(false)?;
@@ -74,7 +139,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 login_xml_url,
             } => {
                 println!("Portal detected at: {}", gateway_base);
-                probe::post_login(&client, &login_xml_url, username, password)?;
+                probe::post_login(&client, &login_xml_url, &username, &password)?;
                 set_cached_gateway(&login_xml_url);
                 return Ok(());
             }
@@ -102,14 +167,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 login_xml_url,
                             } => {
                                 println!("Portal detected at: {}", gateway_base);
-                                probe::post_login(&client, &login_xml_url, username, password)?;
+                                probe::post_login(&client, &login_xml_url, &username, &password)?;
                                 set_cached_gateway(&login_xml_url);
                                 return Ok(());
                             }
                             ProbeResult::InterfaceOffline => {
                                 eprintln!("Interface still offline after Wi-Fi connect attempt.");
                                 return Err(
-                                    "Interface still offline after Wi-Fi connect attempt.".into()
+                                    "Interface still offline after Wi-Fi connect attempt.".into(),
                                 );
                             }
                             ProbeResult::ProbeTimeoutOrError(e) => {
@@ -133,10 +198,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     eprintln!("Usage:");
-    eprintln!("  ccp       Authenticate using saved credentials");
-    eprintln!("  ccp set   Save username and password");
+    eprintln!("  ccp                          Authenticate using saved credentials");
+    eprintln!("  ccp set                      Save username and password");
+    eprintln!("  ccp start                    Start autonomous background daemon");
+    eprintln!("  ccp stop                     Stop running background daemon");
+    eprintln!("  ccp status                   Display daemon state and health status");
+    eprintln!("  ccp daemon [--once] [--dry-run]  Run daemon loop in foreground");
+    eprintln!("  ccp autostart [enable|disable]   Enable/disable OS boot startup");
 
     Err("Invalid command line arguments.".into())
+}
+
+fn load_credentials() -> Result<(String, String), String> {
+    let path = credentials_path();
+
+    if !Path::new(&path).exists() {
+        return Err("Credentials not found. Run `ccp set` first.".to_string());
+    }
+
+    let mut file = File::open(&path).map_err(|e| format!("Failed to open credentials: {e}"))?;
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)
+        .map_err(|e| format!("Failed to read credentials: {e}"))?;
+
+    let mut lines = contents.lines();
+    let username = lines.next().unwrap_or("").trim().to_string();
+    let password = lines.next().unwrap_or("").trim().to_string();
+
+    if username.is_empty() || password.is_empty() {
+        return Err("Username or password missing in credentials file.".to_string());
+    }
+
+    Ok((username, password))
 }
 
 fn credentials_path() -> PathBuf {
