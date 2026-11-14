@@ -32,11 +32,25 @@ pub fn run_daemon(
     };
 
     let mut state = DaemonState::load(&state_path);
-    state.pid = std::process::id();
-    let _ = state.save_atomic(&state_path);
+    if _lock.is_some() || !instance::is_daemon_running(&lock_path) {
+        state.pid = std::process::id();
+        let _ = state.save_atomic(&state_path);
+    }
+
+    let cached_gw_path = config_dir.join("cached_gateway.txt");
+    if state.active_gateway.is_none()
+        && cached_gw_path.exists()
+        && let Ok(gw) = std::fs::read_to_string(&cached_gw_path)
+    {
+        let gw_trimmed = gw.trim().to_string();
+        if !gw_trimmed.is_empty() {
+            state.active_gateway = Some(gw_trimmed);
+        }
+    }
 
     let client = probe::build_fast_client(false).map_err(|e| e.to_string())?;
     let mut disconnected_ticks: u32 = 0;
+    let mut first_tick = true;
 
     loop {
         let now = std::time::SystemTime::now()
@@ -44,7 +58,8 @@ pub fn run_daemon(
             .unwrap_or_default()
             .as_secs();
 
-        let mut force_probe = once;
+        let mut force_probe = once || first_tick;
+        first_tick = false;
         let local_ip = probe::current_local_ipv4();
 
         // 1. Fast Roaming Check (<0.1ms, zero packets)
@@ -111,10 +126,11 @@ pub fn run_daemon(
                                 state.failure_streak = 0;
                                 state.total_logins += 1;
                                 state.last_login_epoch = now;
-                                state.active_gateway = Some(login_xml_url);
+                                state.active_gateway = Some(login_xml_url.clone());
                                 state.last_status_message =
                                     format!("Authenticated at {gateway_base}");
                                 let _ = state.save_atomic(&state_path);
+                                let _ = std::fs::write(&cached_gw_path, &login_xml_url);
                             }
                             Err(e) => {
                                 let err_str = e.to_string();
@@ -235,6 +251,14 @@ pub fn stop_daemon(config_dir: &Path) -> Result<(), String> {
             let _ = std::process::Command::new("kill")
                 .arg(pid.to_string())
                 .output();
+        }
+
+        // Poll every 50ms up to 500ms for OS process to fully terminate and release kernel handle
+        for _ in 0..10 {
+            if !instance::is_daemon_running(&lock_path) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
         }
 
         println!("Daemon (PID {pid}) stopped.");

@@ -35,7 +35,7 @@ impl DaemonState {
             std::fs::create_dir_all(parent)?;
         }
 
-        let tmp_path = path.with_extension("json.tmp");
+        let tmp_path = path.with_extension(format!("json.{}.tmp", std::process::id()));
         let json_data = serde_json::to_string_pretty(self)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
@@ -45,12 +45,12 @@ impl DaemonState {
             file.sync_all()?;
         }
 
-        // On Windows, rename fails if destination already exists, so remove first if needed
-        if path.exists() {
+        // Rust's std::fs::rename on Windows uses MoveFileExW with MOVEFILE_REPLACE_EXISTING.
+        // Fall back to remove_file + rename only if direct rename fails.
+        std::fs::rename(&tmp_path, path).or_else(|_| {
             let _ = std::fs::remove_file(path);
-        }
-
-        std::fs::rename(&tmp_path, path)?;
+            std::fs::rename(&tmp_path, path)
+        })?;
         Ok(())
     }
 

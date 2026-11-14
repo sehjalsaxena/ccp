@@ -35,3 +35,28 @@ Run `ccp` anytime you connect to Wi-Fi:
 ```bash
 ccp
 ```
+
+### 3. Autonomous Background Daemon
+Run `ccp` as an autonomous background service that continuously monitors network status, auto-authenticates across subnets (Hostel ↔ College roaming), and reconnects silently on wake-from-sleep:
+
+```bash
+# Start the background daemon
+ccp start
+
+# Inspect daemon state, active gateway, telemetry, and circuit breaker status
+ccp status
+
+# Stop the running background daemon
+ccp stop
+```
+
+### 4. Silent Autostart on Boot
+Configure `ccp` to run silently in the background on system startup (Windows Registry / macOS Launchd / Linux systemd):
+
+```bash
+# Enable background autostart on boot
+ccp autostart enable
+
+# Disable autostart
+ccp autostart disable
+```
