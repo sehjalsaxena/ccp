@@ -13,6 +13,25 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[cfg(target_os = "windows")]
 const DETACHED_PROCESS: u32 = 0x0000_0008;
 
+fn load_latest_credentials(
+    config_dir: &Path,
+    default_user: &str,
+    default_pass: &str,
+) -> (String, String) {
+    let creds_file = config_dir.join("credentials.txt");
+    if let Ok(contents) = std::fs::read_to_string(&creds_file) {
+        let mut lines = contents.lines();
+        if let (Some(u), Some(p)) = (lines.next(), lines.next()) {
+            let u_trimmed = u.trim();
+            let p_trimmed = p.trim();
+            if !u_trimmed.is_empty() && !p_trimmed.is_empty() {
+                return (u_trimmed.to_string(), p_trimmed.to_string());
+            }
+        }
+    }
+    (default_user.to_string(), default_pass.to_string())
+}
+
 /// Runs the autonomous background daemon roaming & re-auth loop.
 pub fn run_daemon(
     config_dir: &Path,
@@ -31,11 +50,18 @@ pub fn run_daemon(
         Some(SingleInstanceLock::acquire(&lock_path)?)
     };
 
+    let can_save_state = _lock.is_some() || !instance::is_daemon_running(&lock_path);
     let mut state = DaemonState::load(&state_path);
-    if _lock.is_some() || !instance::is_daemon_running(&lock_path) {
+    if can_save_state {
         state.pid = std::process::id();
         let _ = state.save_atomic(&state_path);
     }
+
+    let save_state = |st: &DaemonState| {
+        if can_save_state {
+            let _ = st.save_atomic(&state_path);
+        }
+    };
 
     let cached_gw_path = config_dir.join("cached_gateway.txt");
     if state.active_gateway.is_none()
@@ -51,6 +77,7 @@ pub fn run_daemon(
     let client = probe::build_fast_client(false).map_err(|e| e.to_string())?;
     let mut disconnected_ticks: u32 = 0;
     let mut first_tick = true;
+    let mut next_allowed_probe_epoch: u64 = 0;
 
     loop {
         let now = std::time::SystemTime::now()
@@ -60,6 +87,18 @@ pub fn run_daemon(
 
         let mut force_probe = once || first_tick;
         first_tick = false;
+
+        // Live reset of circuit breaker if reset on disk via `ccp set`
+        if state.halted_bad_credentials {
+            let disk_state = DaemonState::load(&state_path);
+            if !disk_state.halted_bad_credentials {
+                state.halted_bad_credentials = false;
+                state.failure_streak = 0;
+                force_probe = true;
+                next_allowed_probe_epoch = 0;
+            }
+        }
+
         let local_ip = probe::current_local_ipv4();
 
         // 1. Fast Roaming Check (<0.1ms, zero packets)
@@ -77,6 +116,7 @@ pub fn run_daemon(
                         {
                             state.last_local_ip = Some(ip.to_string());
                             force_probe = true;
+                            next_allowed_probe_epoch = 0;
                         }
                     }
                 }
@@ -88,20 +128,30 @@ pub fn run_daemon(
                     // Subnet Roam / Wake-from-Sleep Detected!
                     state.last_local_ip = Some(ip_str);
                     force_probe = true;
+                    next_allowed_probe_epoch = 0;
                 }
             }
         }
 
-        // 2. Portal Probe (when forced, or every 30s)
-        if force_probe || now.saturating_sub(state.last_probe_epoch) >= 30 {
+        // 2. Portal Probe (when forced, or every 30s after backoff has elapsed)
+        let probe_due =
+            now >= next_allowed_probe_epoch && now.saturating_sub(state.last_probe_epoch) >= 30;
+        if force_probe || probe_due {
             state.last_probe_epoch = now;
 
-            let probe_res = probe::probe_network(&client, state.active_gateway.as_deref());
+            let fallback_gw = if !force_probe && state.last_status_message == "Online and unlocked"
+            {
+                None
+            } else {
+                state.active_gateway.as_deref()
+            };
+
+            let probe_res = probe::probe_network(&client, fallback_gw);
             match probe_res {
                 ProbeResult::OnlineUnlocked => {
                     state.failure_streak = 0;
                     state.last_status_message = "Online and unlocked".to_string();
-                    let _ = state.save_atomic(&state_path);
+                    save_state(&state);
                 }
 
                 ProbeResult::LockedPortal {
@@ -111,7 +161,7 @@ pub fn run_daemon(
                     if dry_run {
                         state.last_status_message =
                             format!("Dry-run: portal locked at {gateway_base}");
-                        let _ = state.save_atomic(&state_path);
+                        save_state(&state);
                         if once {
                             return Ok(());
                         }
@@ -119,9 +169,11 @@ pub fn run_daemon(
                         // Circuit breaker engaged: prevent campus account lockouts
                         state.last_status_message =
                             "Halted due to bad credentials. Run 'ccp set'.".to_string();
-                        let _ = state.save_atomic(&state_path);
+                        save_state(&state);
                     } else {
-                        match probe::post_login(&client, &login_xml_url, username, password) {
+                        let (cur_user, cur_pass) =
+                            load_latest_credentials(config_dir, username, password);
+                        match probe::post_login(&client, &login_xml_url, &cur_user, &cur_pass) {
                             Ok(_) => {
                                 state.failure_streak = 0;
                                 state.total_logins += 1;
@@ -129,19 +181,28 @@ pub fn run_daemon(
                                 state.active_gateway = Some(login_xml_url.clone());
                                 state.last_status_message =
                                     format!("Authenticated at {gateway_base}");
-                                let _ = state.save_atomic(&state_path);
-                                let _ = std::fs::write(&cached_gw_path, &login_xml_url);
+                                next_allowed_probe_epoch = 0;
+                                save_state(&state);
+                                if can_save_state {
+                                    let _ = std::fs::write(&cached_gw_path, &login_xml_url);
+                                }
                             }
                             Err(e) => {
                                 let err_str = e.to_string();
                                 let err_lower = err_str.to_lowercase();
                                 let is_credential_err = [
                                     "invalid username",
+                                    "invalid user name",
                                     "invalid password",
                                     "incorrect password",
                                     "wrong password",
                                     "invalid credentials",
                                     "make sure your password is correct",
+                                    "authentication failed",
+                                    "login failed",
+                                    "account expired",
+                                    "access denied",
+                                    "portal returned fail status",
                                 ]
                                 .iter()
                                 .any(|k| err_lower.contains(k));
@@ -151,23 +212,21 @@ pub fn run_daemon(
                                     state.failure_streak += 1;
                                     state.last_status_message =
                                         format!("Halted (bad credentials): {err_str}");
-                                    let _ = state.save_atomic(&state_path);
+                                    save_state(&state);
                                 } else {
                                     state.failure_streak += 1;
                                     state.last_status_message = format!(
                                         "Login failed (attempt {}): {err_str}",
                                         state.failure_streak
                                     );
-                                    let _ = state.save_atomic(&state_path);
+                                    save_state(&state);
 
-                                    // Exponential backoff up to 300s
+                                    // Exponential backoff up to 300s (non-blocking)
                                     let backoff = 300u64.min(
                                         5 * (1u64
                                             << (state.failure_streak.saturating_sub(1).min(6))),
                                     );
-                                    if !once {
-                                        std::thread::sleep(Duration::from_secs(backoff));
-                                    }
+                                    next_allowed_probe_epoch = now + backoff;
                                 }
                             }
                         }
@@ -176,12 +235,12 @@ pub fn run_daemon(
 
                 ProbeResult::InterfaceOffline => {
                     state.last_status_message = "Wi-Fi interface offline".to_string();
-                    let _ = state.save_atomic(&state_path);
+                    save_state(&state);
                 }
 
                 ProbeResult::ProbeTimeoutOrError(e) => {
                     state.last_status_message = format!("Probe error: {e}");
-                    let _ = state.save_atomic(&state_path);
+                    save_state(&state);
                 }
             }
         }
@@ -202,6 +261,10 @@ pub fn start_background_daemon(config_dir: &Path) -> Result<(), String> {
         return Ok(());
     }
 
+    if lock_path.exists() {
+        let _ = std::fs::remove_file(&lock_path);
+    }
+
     let exe = std::env::current_exe().map_err(|e| format!("Failed to get exe path: {e}"))?;
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("daemon")
@@ -216,11 +279,17 @@ pub fn start_background_daemon(config_dir: &Path) -> Result<(), String> {
         .map_err(|e| format!("Failed to spawn background daemon: {e}"))?;
 
     // Poll every 25ms up to 20 times (500ms max) for lock acquisition
+    let mut started = false;
     for _ in 0..20 {
         if instance::is_daemon_running(&lock_path) {
+            started = true;
             break;
         }
         std::thread::sleep(Duration::from_millis(25));
+    }
+
+    if !started {
+        return Err("Background daemon exited prematurely before acquiring lock.".to_string());
     }
 
     println!("Background daemon started successfully.");
@@ -251,16 +320,30 @@ pub fn stop_daemon(config_dir: &Path) -> Result<(), String> {
         #[cfg(target_os = "windows")]
         {
             let mut cmd = std::process::Command::new("taskkill");
-            cmd.args(["/PID", &pid.to_string(), "/F"])
-                .creation_flags(CREATE_NO_WINDOW);
+            cmd.args([
+                "/PID",
+                &pid.to_string(),
+                "/FI",
+                "IMAGENAME eq ccp.exe",
+                "/F",
+            ])
+            .creation_flags(CREATE_NO_WINDOW);
             let _ = cmd.output();
         }
 
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = std::process::Command::new("kill")
-                .arg(pid.to_string())
+            let comm = std::process::Command::new("ps")
+                .args(["-p", &pid.to_string(), "-o", "comm="])
                 .output();
+            if let Ok(out) = comm {
+                let name = String::from_utf8_lossy(&out.stdout).to_lowercase();
+                if name.contains("ccp") {
+                    let _ = std::process::Command::new("kill")
+                        .arg(pid.to_string())
+                        .output();
+                }
+            }
         }
 
         // Poll every 50ms up to 500ms for OS process to fully terminate and release kernel handle
@@ -276,7 +359,9 @@ pub fn stop_daemon(config_dir: &Path) -> Result<(), String> {
         println!("Unable to determine PID of running daemon.");
     }
 
-    let _ = std::fs::remove_file(&lock_path);
+    if !instance::is_daemon_running(&lock_path) {
+        let _ = std::fs::remove_file(&lock_path);
+    }
     Ok(())
 }
 
@@ -392,6 +477,11 @@ pub fn set_autostart(enable: bool) -> Result<(), String> {
         if enable {
             std::fs::create_dir_all(&agents_dir)
                 .map_err(|e| format!("Failed to create LaunchAgents dir: {e}"))?;
+            let exe_escaped = exe_str
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+                .replace('"', "&quot;");
             let plist_content = format!(
                 r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -401,7 +491,7 @@ pub fn set_autostart(enable: bool) -> Result<(), String> {
     <string>com.garvittsingla.ccp</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{exe_str}</string>
+        <string>{exe_escaped}</string>
         <string>start</string>
     </array>
     <key>RunAtLoad</key>
@@ -413,8 +503,14 @@ pub fn set_autostart(enable: bool) -> Result<(), String> {
             );
             std::fs::write(&plist_path, plist_content)
                 .map_err(|e| format!("Failed to write plist: {e}"))?;
+            let _ = std::process::Command::new("launchctl")
+                .args(["load", "-w", &plist_path.to_string_lossy()])
+                .output();
             println!("[OK] Auto-start enabled (macOS LaunchAgent created).");
         } else if plist_path.exists() {
+            let _ = std::process::Command::new("launchctl")
+                .args(["unload", &plist_path.to_string_lossy()])
+                .output();
             let _ = std::fs::remove_file(&plist_path);
             println!("[OK] Auto-start disabled (macOS LaunchAgent removed).");
         }
@@ -430,13 +526,20 @@ pub fn set_autostart(enable: bool) -> Result<(), String> {
             std::fs::create_dir_all(&systemd_dir)
                 .map_err(|e| format!("Failed to create systemd user dir: {e}"))?;
             let service_content = format!(
-                "[Unit]\nDescription=CCP Captive Portal Daemon\nAfter=network.target\n\n[Service]\nExecStart={exe_str} daemon\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n"
+                "[Unit]\nDescription=CCP Captive Portal Daemon\nAfter=network.target\n\n[Service]\nExecStart=\"{exe_str}\" daemon\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n"
             );
             std::fs::write(&service_path, service_content)
                 .map_err(|e| format!("Failed to write service file: {e}"))?;
-            let _ = std::process::Command::new("systemctl")
+            let output = std::process::Command::new("systemctl")
                 .args(["--user", "enable", "--now", "ccp.service"])
-                .output();
+                .output()
+                .map_err(|e| format!("Failed to execute systemctl: {e}"))?;
+            if !output.status.success() {
+                return Err(format!(
+                    "Failed to enable systemd service: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
             println!("[OK] Auto-start enabled (Linux user systemd service enabled).");
         } else {
             let _ = std::process::Command::new("systemctl")

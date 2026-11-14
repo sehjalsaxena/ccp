@@ -28,14 +28,14 @@ pub fn acquire(lock_path: &Path) -> Result<SingleInstanceLock, String> {
         let _ = std::fs::create_dir_all(parent);
     }
 
-    // share_mode(0) gives exclusive lock at the Windows NT kernel level.
-    // If another process has this file open, CreateFileW immediately fails with ERROR_SHARING_VIOLATION (32).
+    // share_mode(1) grants FILE_SHARE_READ but denies FILE_SHARE_WRITE.
+    // Any second writer fails with ERROR_SHARING_VIOLATION (32), while readers can read the PID!
     let mut file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(true)
-        .share_mode(0)
+        .share_mode(1)
         .open(lock_path)
         .map_err(|e| {
             if e.raw_os_error() == Some(32) || e.kind() == std::io::ErrorKind::PermissionDenied {
@@ -83,12 +83,13 @@ pub fn acquire(lock_path: &Path) -> Result<SingleInstanceLock, String> {
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
-        .truncate(true)
         .open(lock_path)
         .map_err(|e| format!("Failed to create instance lock: {e}"))?;
 
     let pid = std::process::id();
-    let _ = writeln!(file, "{pid}");
+    let payload = format!("{pid}\n");
+    let _ = file.write_all(payload.as_bytes());
+    let _ = file.set_len(payload.len() as u64);
     let _ = file.flush();
 
     Ok(SingleInstanceLock {
@@ -105,19 +106,19 @@ pub fn is_daemon_running(lock_path: &Path) -> bool {
         return false;
     }
 
-    // Try opening with exclusive share_mode(0)
+    // Attempt to open with write access and share_mode(3) (FILE_SHARE_READ | FILE_SHARE_WRITE).
+    // If the daemon holds share_mode(1), write access is denied with ERROR_SHARING_VIOLATION (32).
     match std::fs::OpenOptions::new()
-        .read(true)
         .write(true)
-        .share_mode(0)
+        .share_mode(3)
         .open(lock_path)
     {
         Ok(_) => {
-            // Lock was available, so daemon is not actively holding it
+            // Lock was available for writing, so daemon is not running
             false
         }
         Err(e) => {
-            // Error 32: ERROR_SHARING_VIOLATION -> daemon is holding the lock
+            // Error 32: ERROR_SHARING_VIOLATION -> daemon is holding write lock
             e.raw_os_error() == Some(32) || e.kind() == std::io::ErrorKind::PermissionDenied
         }
     }

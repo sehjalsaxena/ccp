@@ -174,7 +174,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             ProbeResult::InterfaceOffline => {
                                 eprintln!("Interface still offline after Wi-Fi connect attempt.");
                                 return Err(
-                                    "Interface still offline after Wi-Fi connect attempt.".into(),
+                                    "Interface still offline after Wi-Fi connect attempt.".into()
                                 );
                             }
                             ProbeResult::ProbeTimeoutOrError(e) => {

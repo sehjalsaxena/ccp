@@ -143,3 +143,168 @@ fn test_integration_daemon_circuit_breaker_on_bad_password() {
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
+
+#[test]
+fn test_integration_lock_file_readable_while_held() {
+    let _guard = TEST_MUTEX.lock().unwrap();
+    let tmp_dir =
+        std::env::temp_dir().join(format!("ccp_test_int_readlock_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&tmp_dir);
+    let lock_file = tmp_dir.join("daemon.lock");
+
+    let _ = std::fs::remove_file(&lock_file);
+    assert!(!is_daemon_running(&lock_file));
+
+    let lock = acquire(&lock_file).expect("Failed to acquire lock");
+    assert!(is_daemon_running(&lock_file));
+
+    // Under Windows share_mode(1) and Unix, readers can open and read the file while the lock is held
+    let read_result = std::fs::read_to_string(&lock_file);
+    assert!(
+        read_result.is_ok(),
+        "Lock file must be readable while held: {:?}",
+        read_result
+    );
+    let content = read_result.unwrap();
+    let pid: u32 = content
+        .trim()
+        .parse()
+        .expect("Lock file must contain valid PID");
+    assert_eq!(pid, std::process::id());
+
+    drop(lock);
+    assert!(!is_daemon_running(&lock_file));
+
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+}
+
+#[test]
+fn test_integration_daemon_live_credential_reload() {
+    let _guard = TEST_MUTEX.lock().unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind mock server");
+    let port = listener.local_addr().unwrap().port();
+    let probe_url_str = format!("http://127.0.0.1:{port}/probe");
+
+    let handle = std::thread::spawn(move || {
+        // Step 1: Probe request -> 302 Found redirect
+        if let Ok((mut stream1, _)) = listener.accept() {
+            let mut buf = [0u8; 2048];
+            let _ = stream1.read(&mut buf);
+            let redirect_response = format!(
+                "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{port}/httpclient.html\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            let _ = stream1.write_all(redirect_response.as_bytes());
+            let _ = stream1.flush();
+        }
+
+        // Step 2: Accept POST /login.xml and verify reloaded credentials were used
+        if let Ok((mut stream2, _)) = listener.accept() {
+            let mut buf = [0u8; 4096];
+            let n = stream2.read(&mut buf).unwrap_or(0);
+            let req_str = String::from_utf8_lossy(&buf[..n]);
+            assert!(
+                req_str.contains("fresh_user") && req_str.contains("fresh_pass"),
+                "Daemon must use live reloaded credentials from credentials.txt: {}",
+                req_str
+            );
+
+            let xml_body = "<requestresponse><status><![CDATA[LIVE]]></status><message><![CDATA[You have successfully logged in]]></message></requestresponse>";
+            let login_response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                xml_body.len(),
+                xml_body
+            );
+            let _ = stream2.write_all(login_response.as_bytes());
+            let _ = stream2.flush();
+        }
+    });
+
+    let tmp_dir = std::env::temp_dir().join(format!("ccp_test_live_creds_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&tmp_dir);
+
+    // Write updated credentials.txt to config_dir
+    let creds_path = tmp_dir.join("credentials.txt");
+    std::fs::write(&creds_path, "fresh_user\nfresh_pass\n").unwrap();
+
+    unsafe {
+        std::env::set_var("CCP_PROBE_URL", &probe_url_str);
+    }
+    // Pass old credentials into run_daemon, verify it picks up fresh credentials from credentials.txt
+    let res = run_daemon(&tmp_dir, "stale_user", "stale_pass", true, false);
+    unsafe {
+        std::env::remove_var("CCP_PROBE_URL");
+    }
+
+    assert!(res.is_ok(), "run_daemon should succeed: {:?}", res);
+    handle.join().unwrap();
+
+    let state = DaemonState::load(&tmp_dir.join("state.json"));
+    assert_eq!(state.failure_streak, 0);
+    assert_eq!(state.total_logins, 1);
+    assert!(!state.halted_bad_credentials);
+
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+}
+
+#[test]
+fn test_integration_daemon_expanded_circuit_breaker_keywords() {
+    let _guard = TEST_MUTEX.lock().unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind mock server");
+    let port = listener.local_addr().unwrap().port();
+    let probe_url_str = format!("http://127.0.0.1:{port}/probe");
+
+    let handle = std::thread::spawn(move || {
+        // Step 1: Probe request -> 302 Found redirect
+        if let Ok((mut stream1, _)) = listener.accept() {
+            let mut buf = [0u8; 2048];
+            let _ = stream1.read(&mut buf);
+            let redirect_response = format!(
+                "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{port}/httpclient.html\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            let _ = stream1.write_all(redirect_response.as_bytes());
+            let _ = stream1.flush();
+        }
+
+        // Step 2: Sophos failure XML with "Account expired"
+        if let Ok((mut stream2, _)) = listener.accept() {
+            let mut buf = [0u8; 4096];
+            let _ = stream2.read(&mut buf);
+            let xml_body = "<requestresponse><status><![CDATA[FAIL]]></status><message><![CDATA[Your account expired on 2026-11-01]]></message></requestresponse>";
+            let login_response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                xml_body.len(),
+                xml_body
+            );
+            let _ = stream2.write_all(login_response.as_bytes());
+            let _ = stream2.flush();
+        }
+    });
+
+    let tmp_dir = std::env::temp_dir().join(format!("ccp_test_exp_breaker_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&tmp_dir);
+
+    unsafe {
+        std::env::set_var("CCP_PROBE_URL", &probe_url_str);
+    }
+    let res = run_daemon(&tmp_dir, "testuser", "pass", true, false);
+    unsafe {
+        std::env::remove_var("CCP_PROBE_URL");
+    }
+
+    assert!(
+        res.is_ok(),
+        "run_daemon should succeed cleanly on once=true"
+    );
+    handle.join().unwrap();
+
+    let state = DaemonState::load(&tmp_dir.join("state.json"));
+    assert!(
+        state.halted_bad_credentials,
+        "Circuit breaker should halt on 'account expired'"
+    );
+    assert_eq!(state.failure_streak, 1);
+
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+}
