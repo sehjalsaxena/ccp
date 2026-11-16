@@ -1,3 +1,5 @@
+#![allow(clippy::collapsible_if, clippy::collapsible_else_if)]
+
 use ccp::daemon;
 use ccp::probe::{self, ProbeResult};
 use ccp::state::DaemonState;

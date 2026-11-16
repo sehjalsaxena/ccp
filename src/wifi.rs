@@ -168,12 +168,13 @@ fn get_macos_wifi_device() -> String {
             let trimmed = line.trim();
             if trimmed.contains("Wi-Fi") || trimmed.contains("AirPort") {
                 found_wifi = true;
-            } else if found_wifi && trimmed.starts_with("Device:") {
-                if let Some(dev) = trimmed.split(':').nth(1) {
-                    let dev = dev.trim();
-                    if !dev.is_empty() {
-                        return dev.to_string();
-                    }
+            } else if found_wifi
+                && trimmed.starts_with("Device:")
+                && let Some(dev) = trimmed.split(':').nth(1)
+            {
+                let dev = dev.trim();
+                if !dev.is_empty() {
+                    return dev.to_string();
                 }
             }
         }

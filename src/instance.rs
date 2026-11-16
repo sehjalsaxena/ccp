@@ -136,13 +136,13 @@ pub fn acquire(lock_path: &Path) -> Result<SingleInstanceLock, String> {
     }
 
     if lock_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(lock_path) {
-            if is_ccp_pid_alive(&content) {
-                return Err(format!(
-                    "Daemon is already running (PID {}).",
-                    content.trim()
-                ));
-            }
+        if let Ok(content) = std::fs::read_to_string(lock_path)
+            && is_ccp_pid_alive(&content)
+        {
+            return Err(format!(
+                "Daemon is already running (PID {}).",
+                content.trim()
+            ));
         }
         // Stale lock file from a dead process or recycled PID -> remove it safely
         let _ = std::fs::remove_file(lock_path);
