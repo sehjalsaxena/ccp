@@ -54,7 +54,12 @@ try {
 
     Write-Host "[OK] ccp installed to $TargetExe" -ForegroundColor Green
 
-    # Check and update User PATH
+    # Always ensure InstallDir is in current session PATH so ccp is immediately available
+    if (($env:PATH -split ';') -notcontains $InstallDir) {
+        $env:PATH = "$InstallDir;$env:PATH"
+    }
+
+    # Check and update persistent User PATH
     $UserPath = [Environment]::GetEnvironmentVariable("Path", [EnvironmentVariableTarget]::User)
     $PathParts = ($UserPath -split ';') | Where-Object { $_ -ne '' }
     $NormalizedInstallDir = $InstallDir.TrimEnd('\')
@@ -62,15 +67,12 @@ try {
 
     if (-not $AlreadyInPath) {
         Write-Host ""
-        Write-Host "[WARN] $InstallDir is not in your User PATH." -ForegroundColor Yellow
-        Write-Host "Adding $InstallDir to your User PATH..." -ForegroundColor Cyan
+        Write-Host "Adding $InstallDir to your persistent User PATH..." -ForegroundColor Cyan
 
         $NewPath = if ([string]::IsNullOrWhiteSpace($UserPath)) { $InstallDir } else { "$UserPath;$InstallDir" }
         [Environment]::SetEnvironmentVariable("Path", $NewPath, [EnvironmentVariableTarget]::User)
-        $env:PATH = "$env:PATH;$InstallDir"
 
         Write-Host "[OK] Added $InstallDir to User PATH." -ForegroundColor Green
-        Write-Host "Please restart your terminal or PowerShell window for PATH changes to take effect." -ForegroundColor Yellow
     }
 
     Write-Host ""

@@ -2,7 +2,7 @@
 
 When moving between Hostel and College blocks, laptops roam across different Wi-Fi access points and subnets, dropping connections and requiring repetitive captive portal logins. On Windows, default proxy discovery (WPAD), IPv6 timeouts, and console subprocess calls also cause multi-second lag.
 
-**ccp** is a cross-platform Rust CLI and background daemon that:
+**ccp** is a cross-platform CLI and background daemon that:
 - **Detects captive portals in <20ms** using Firefox's `CaptiveDetect` plain-HTTP redirect discovery (`http://detectportal.firefox.com/success.txt` -> `gstatic` -> `msftconnecttest`).
 - **Works across Hostel and College subnets** automatically (supports both Palo Alto `/php/uid.php` and Sophos/Cyberoam `:8090/login.xml` portals with zero hardcoded gateway IPs).
 - **Runs natively on Windows without WSL** (zero console popups, IPv4-bound sockets, automatic in-range Wi-Fi connection when disconnected).
@@ -10,25 +10,22 @@ When moving between Hostel and College blocks, laptops roam across different Wi-
 
 ---
 
-## Installation
+## Installation (No Rust or Dependencies Required)
 
-### Windows (Native PowerShell — No WSL Required)
-Run in PowerShell:
+### 1. Windows (One-Line PowerShell Install)
+Open PowerShell and run:
 ```powershell
 irm https://raw.githubusercontent.com/smresponsibilities/ccp/main/install.ps1 | iex
 ```
+*`ccp` is downloaded, installed, and added to your PATH immediately—usable in the same terminal.*
 
-### macOS, Linux & WSL
-Run in Terminal:
+### 2. Direct Windows `.exe` Download
+Download [`ccp-windows-amd64.zip`](https://github.com/smresponsibilities/ccp/releases/latest/download/ccp-windows-amd64.zip), extract `ccp.exe`, and double-click or run from command prompt.
+
+### 3. macOS, Linux & WSL (One-Line Install)
+Open Terminal and run:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/smresponsibilities/ccp/main/install.sh | bash
-```
-
-### Build From Source (Cargo)
-```bash
-git clone https://github.com/smresponsibilities/ccp.git
-cd ccp
-cargo build --release
 ```
 
 ---
@@ -119,8 +116,8 @@ ccp stop
 ccp status
 ```
 
-### Test 4: Automated Test Suite (37 Unit & Mock Portal Integration Tests — Works Off Campus)
-Spins up local TCP mock servers simulating Firefox 302 redirects, Palo Alto `/php/uid.php` and Sophos `:8090/login.xml` authentication, URL-encoding of special characters in passwords, circuit-breaker halting on invalid passwords, and single-instance kernel locking:
+### Test 4: Foreground Dry-Run Verification (Safe Simulation)
+To test portal detection logic in the foreground without sending login credentials or starting background services:
 ```bash
-cargo test --all-targets -- --nocapture
+ccp daemon --once --dry-run
 ```
