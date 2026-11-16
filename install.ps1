@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [string]$Version = $env:CCP_VERSION,
-    [string]$Repo = $(if ($env:CCP_REPO) { $env:CCP_REPO } else { "garvittsingla/ccp" }),
+    [string]$Repo = $(if ($env:CCP_REPO) { $env:CCP_REPO } else { "smresponsibilities/ccp" }),
     [string]$InstallDir = $(if ($env:INSTALL_DIR) { $env:INSTALL_DIR } else { "$env:USERPROFILE\.ccp\bin" })
 )
 

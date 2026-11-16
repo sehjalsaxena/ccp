@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -e
 
-REPO="${CCP_REPO:-garvittsingla/ccp}"
+REPO="${CCP_REPO:-smresponsibilities/ccp}"
 
 # Detect Operating System (macOS, Linux, WSL)
 OS="$(uname -s)"
