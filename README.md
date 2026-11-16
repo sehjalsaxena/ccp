@@ -51,50 +51,63 @@ cargo build --release
 
 ---
 
-## Quick Start (Manual Mode)
+## Usage Methods
 
-### 1. Save Your Campus Credentials (One-Time Setup)
-```bash
-ccp set
-```
-Enter your campus Wi-Fi username and password. Credentials are saved locally (`~/.config/ccp/credentials.txt` with `0600` permissions on Unix, or `%USERPROFILE%\.config\ccp\credentials.txt` on Windows).
-
-### 2. Authenticate Anytime
-```bash
-ccp
-```
-- If already online, `ccp` exits in ~20ms (`Already connected and authenticated!`).
-- If locked behind a captive portal, `ccp` discovers the current building's gateway URL and logs in immediately.
-- If Wi-Fi is disconnected, `ccp` connects to your in-range saved campus Wi-Fi network, waits for an IPv4 lease, and authenticates.
+Choose the mode that fits your routine best:
 
 ---
 
-## Full Automation (Background Daemon & Auto-Start on Boot)
+### Method 1: Simple Manual Mode (Zero Background Processes)
+If you prefer not having any background process running at all:
+1. **Save your credentials once:**
+   ```bash
+   ccp set
+   ```
+2. **Authenticate whenever needed:**
+   ```bash
+   ccp
+   ```
+   - If already online: exits in ~20ms (`Already connected and authenticated!`).
+   - If behind a captive portal: detects the gateway and logs in immediately.
+   - If disconnected from Wi-Fi: automatically finds and connects to the campus SSID, gets an IPv4 address, and logs in.
 
-Instead of running `ccp` manually every time you walk between Hostel and College or wake your laptop from sleep, run the background daemon:
+---
 
+### Method 2: Background Daemon (Current Session Only — Without Startup)
+If you want automatic roaming between Hostel and College during your current session, but don't want it starting automatically on system boot:
 ```bash
-# Start the silent background daemon right now
+# Start background roaming daemon right now
 ccp start
 
-# Enable automatic startup on system boot (defaults to starting on next restart)
-ccp autostart enable
-
-# Enable automatic startup AND start the daemon immediately right now
-ccp autostart enable --now
-
-# Check daemon status, active gateway, local IP, login count, and circuit breaker
+# Check real-time daemon state, local IP, gateway, and login count
 ccp status
 
-# Stop the background daemon
+# Stop background daemon whenever you want
 ccp stop
+```
 
-# Disable automatic startup on boot
+---
+
+### Method 3: Full Auto-Start on System Boot (Permanent "Set & Forget")
+If you never want to think about captive portals again:
+```bash
+# Option A: Enable boot startup AND start daemon immediately right now
+ccp autostart enable --now
+
+# Option B: Enable boot startup only (starts on next restart/login)
+ccp autostart enable
+
+# Check status anytime
+ccp status
+
+# Disable boot startup anytime
 ccp autostart disable
 ```
 
+---
+
 ### How the Background Daemon Works
-1. **2-Second Roam & Wake Detection**: Checks the local IPv4 route every 2 seconds using a zero-packet local UDP socket check (<0.1ms). The moment your IP changes between Hostel and College or after sleep, it probes and logs in immediately.
+1. **2-Second Roam & Wake Detection**: Checks the local IPv4 route every 2 seconds using a zero-packet local UDP socket check (<0.1ms). The moment your IP changes between Hostel and College or after waking from sleep, it probes and logs in immediately.
 2. **Periodic Keep-Alive**: Verifies connectivity every 30 seconds while online.
 3. **Account Lockout Protection (Circuit Breaker)**: If the portal rejects your password (e.g., after a campus password change), the daemon halts further login attempts immediately so your campus account is never locked out. Running `ccp set` with your new password automatically resets the circuit breaker and resumes the daemon without restarting it.
 
@@ -102,7 +115,39 @@ ccp autostart disable
 
 ## How to Test & Verify
 
-### Test 1: Portal Login & Fast-Exit Benchmark (On Campus Wi-Fi)
+### Test 1: Real-Life Auto-Start Test (Windows — No Code Required)
+To verify that Windows itself launches `ccp` automatically on system login:
+1. Enable autostart and stop the daemon so you know it's off:
+   ```powershell
+   ccp autostart enable
+   ccp stop
+   ccp status    # Displays: State: Stopped
+   ```
+2. **Sign Out of Windows**: Press `Win + X` → **Shut down or sign out** → **Sign out** (or press `Ctrl + Alt + Del` → **Sign out**).
+3. Sign back into Windows to reach your desktop.
+4. Open PowerShell and check status:
+   ```powershell
+   ccp status
+   ```
+   **Expected Output:** `State: Running` with an active PID and detected Local IP. This proves Windows launched `ccp` in the background on startup!
+5. **Visual check via Task Manager**: Press `Ctrl + Shift + Esc` → click the **Startup apps** tab → look for **`CCP_AutoAuth`** with status **`Enabled`**.
+
+### Test 2: Background Daemon Lifecycle Test (Works On or Off Campus)
+```bash
+ccp start
+ccp status
+ccp start   # Verifies single-instance lock ("ccp daemon is already running.")
+ccp stop
+ccp status
+```
+
+### Test 3: Foreground Dry-Run Verification (Safe Simulation)
+To test portal detection logic in the foreground without sending login credentials or starting background services:
+```bash
+ccp daemon --once --dry-run
+```
+
+### Test 4: Portal Login & Fast-Exit Benchmark (On Campus Wi-Fi)
 1. Save credentials:
    ```bash
    ccp set
@@ -122,7 +167,7 @@ ccp autostart disable
      time ccp
      ```
 
-### Test 2: Auto Wi-Fi Reconnect When Disconnected
+### Test 5: Auto Wi-Fi Reconnect When Disconnected
 1. Open your OS Wi-Fi menu and click **Disconnect** from the campus Wi-Fi network (keep Wi-Fi hardware turned on).
 2. Run:
    ```bash
@@ -130,22 +175,7 @@ ccp autostart disable
    ```
 3. Verify `ccp` detects `Wi-Fi interface offline or disconnected. Connecting to Wi-Fi...`, reconnects to the in-range campus SSID, obtains an IPv4 address, and logs into the portal.
 
-### Test 3: Background Daemon Lifecycle Test (Works On or Off Campus)
-```bash
-ccp start
-ccp status
-ccp start   # Verifies single-instance lock ("ccp daemon is already running.")
-ccp stop
-ccp status
-```
-
-### Test 4: Foreground Dry-Run Verification (Safe Simulation)
-To test portal detection logic in the foreground without sending login credentials or starting background services:
-```bash
-ccp daemon --once --dry-run
-```
-
-### Test 5: Automated Test Suite (37 Unit & Mock Portal Integration Tests — Works Off Campus)
+### Test 6: Automated Test Suite (37 Unit & Mock Portal Integration Tests — Works Off Campus)
 For developers verifying the codebase: spins up local TCP mock servers simulating Firefox 302 redirects, Palo Alto `/php/uid.php` and Sophos `:8090/login.xml` authentication, URL-encoding of special characters in passwords, circuit-breaker halting on invalid passwords, and single-instance kernel locking:
 ```bash
 cargo test --all-targets -- --nocapture

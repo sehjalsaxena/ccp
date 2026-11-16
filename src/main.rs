@@ -111,8 +111,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     return Err(e.into());
                 }
             } else {
-                println!("Auto-start configured. The daemon will automatically launch on your next system restart/login.");
-                println!("Tip: Run 'ccp start' or use 'ccp autostart enable --now' to start the daemon immediately.");
+                println!(
+                    "Auto-start configured. The daemon will automatically launch on your next system restart/login."
+                );
+                println!(
+                    "Tip: Run 'ccp start' or use 'ccp autostart enable --now' to start the daemon immediately."
+                );
             }
         } else if args.len() > 2 && args[2] == "disable" {
             if let Err(e) = daemon::set_autostart(&config_dir, false) {
