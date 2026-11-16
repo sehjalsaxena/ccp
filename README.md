@@ -10,7 +10,20 @@ When moving between Hostel and College blocks, laptops roam across different Wi-
 
 ---
 
-## Installation (No Rust or Dependencies Required)
+## 30-Second Quick Setup (Windows — No Dependencies)
+
+Just open PowerShell and run:
+```powershell
+irm https://raw.githubusercontent.com/smresponsibilities/ccp/main/install.ps1 | iex
+ccp set
+ccp start
+ccp autostart enable
+```
+> **No Rust, no Cargo, no Git, and no WSL required.**
+
+---
+
+## Installation
 
 ### 1. Windows (One-Line PowerShell Install)
 Open PowerShell and run:
@@ -26,6 +39,14 @@ Download [`ccp-windows-amd64.zip`](https://github.com/smresponsibilities/ccp/rel
 Open Terminal and run:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/smresponsibilities/ccp/main/install.sh | bash
+```
+
+### 4. Build From Source (Cargo)
+For developers or users compiling from source:
+```bash
+git clone https://github.com/smresponsibilities/ccp.git
+cd ccp
+cargo build --release
 ```
 
 ---
@@ -120,4 +141,10 @@ ccp status
 To test portal detection logic in the foreground without sending login credentials or starting background services:
 ```bash
 ccp daemon --once --dry-run
+```
+
+### Test 5: Automated Test Suite (37 Unit & Mock Portal Integration Tests — Works Off Campus)
+For developers verifying the codebase: spins up local TCP mock servers simulating Firefox 302 redirects, Palo Alto `/php/uid.php` and Sophos `:8090/login.xml` authentication, URL-encoding of special characters in passwords, circuit-breaker halting on invalid passwords, and single-instance kernel locking:
+```bash
+cargo test --all-targets -- --nocapture
 ```
