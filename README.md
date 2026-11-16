@@ -77,9 +77,11 @@ Instead of running `ccp` manually every time you walk between Hostel and College
 # Start the silent background daemon right now
 ccp start
 
-# Enable automatic startup on system login/boot
-# (Windows Registry Run key / macOS LaunchAgent / Linux systemd user service)
+# Enable automatic startup on system boot (defaults to starting on next restart)
 ccp autostart enable
+
+# Enable automatic startup AND start the daemon immediately right now
+ccp autostart enable --now
 
 # Check daemon status, active gateway, local IP, login count, and circuit breaker
 ccp status

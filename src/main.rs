@@ -95,13 +95,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // 6. Autostart configuration: `ccp autostart [enable|disable]`
+    // 6. Autostart configuration: `ccp autostart [enable [--now]|disable]`
     if args.len() > 1 && args[1] == "autostart" {
         let config_dir = get_config_dir();
         if args.len() > 2 && args[2] == "enable" {
+            let start_now = args.iter().any(|a| a == "--now" || a == "-n");
             if let Err(e) = daemon::set_autostart(&config_dir, true) {
                 eprintln!("[ERROR] {e}");
                 return Err(e.into());
+            }
+
+            if start_now {
+                if let Err(e) = daemon::start_background_daemon(&config_dir) {
+                    eprintln!("[ERROR] Failed to start background daemon: {e}");
+                    return Err(e.into());
+                }
+            } else {
+                println!("Auto-start configured. The daemon will automatically launch on your next system restart/login.");
+                println!("Tip: Run 'ccp start' or use 'ccp autostart enable --now' to start the daemon immediately.");
             }
         } else if args.len() > 2 && args[2] == "disable" {
             if let Err(e) = daemon::set_autostart(&config_dir, false) {
@@ -109,7 +120,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Err(e.into());
             }
         } else {
-            eprintln!("Usage: ccp autostart [enable|disable]");
+            eprintln!("Usage: ccp autostart [enable [--now]|disable]");
             return Err("Invalid autostart arguments.".into());
         }
         return Ok(());
@@ -207,7 +218,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("  ccp stop                     Stop running background daemon");
     eprintln!("  ccp status                   Display daemon state and health status");
     eprintln!("  ccp daemon [--once] [--dry-run]  Run daemon loop in foreground");
-    eprintln!("  ccp autostart [enable|disable]   Enable/disable OS boot startup");
+    eprintln!("  ccp autostart [enable [--now]|disable] Enable/disable OS boot startup");
 
     Err("Invalid command line arguments.".into())
 }
