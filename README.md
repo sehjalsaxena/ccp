@@ -113,6 +113,37 @@ ccp autostart disable
 
 ---
 
+## Script & CLI Parameter Reference
+
+### 1. Installation Scripts Parameters
+
+| Script | Parameter / Env Variable | Default | Description |
+| :--- | :--- | :--- | :--- |
+| **`install.ps1`** | `-Version` (`$env:CCP_VERSION`) | Latest release | Specifies release tag to install (e.g. `v0.2.0`). |
+| | `-Repo` (`$env:CCP_REPO`) | `smresponsibilities/ccp` | Target GitHub repository (`owner/repo`). |
+| | `-InstallDir` (`$env:INSTALL_DIR`) | `$env:USERPROFILE\.ccp\bin` | Directory where `ccp.exe` is placed and added to PATH. |
+| **`install.sh`** | `CCP_VERSION` | Latest release | Specifies release tag to install (e.g. `v0.2.0`). |
+| | `CCP_REPO` | `smresponsibilities/ccp` | Target GitHub repository (`owner/repo`). |
+| | `INSTALL_DIR` | `$HOME/.local/bin` | Directory where `ccp` binary is placed. |
+
+### 2. CLI Commands & Options
+
+| Command | Arguments / Flags | Description | Example |
+| :--- | :--- | :--- | :--- |
+| **`ccp`** | *(none)* | Manual authentication mode. Discovers captive portal and logs in immediately, or fast-exits in ~20ms if already connected. | `ccp` |
+| **`ccp set`** | *(none)* | Saves campus Wi-Fi username and password locally (`0600` permissions on Unix). Resets circuit breaker. | `ccp set` |
+| **`ccp start`** | *(none)* | Starts the autonomous background daemon detached in the background with no console window. | `ccp start` |
+| **`ccp stop`** | *(none)* | Authoritatively stops the running background daemon and releases kernel locks. | `ccp stop` |
+| **`ccp status`** | *(none)* | Displays real-time operational status, PID, detected local IPv4, active gateway, login count, and circuit breaker. | `ccp status` |
+| **`ccp autostart`** | `enable` | Registers auto-start on boot (Windows Registry / macOS LaunchAgent / Linux systemd). Starts on next login/boot. | `ccp autostart enable` |
+| | `enable --now` (or `-n`) | Registers auto-start on boot **AND** immediately launches the background daemon right now without waiting for reboot. | `ccp autostart enable --now` |
+| | `disable` | Disables and cleans up OS boot auto-start registration. | `ccp autostart disable` |
+| **`ccp daemon`** | *(none)* | Runs daemon roaming loop in foreground (polls route every 2s, keep-alive every 30s). | `ccp daemon` |
+| | `--once` | Runs one single check iteration and exits immediately. | `ccp daemon --once` |
+| | `--dry-run` | Probes network and discovers portal without submitting login credentials. | `ccp daemon --once --dry-run` |
+
+---
+
 ## How to Test & Verify
 
 ### Test 1: Real-Life Auto-Start Test (Windows — No Code Required)
