@@ -16,10 +16,9 @@ Just open PowerShell and run:
 ```powershell
 irm https://raw.githubusercontent.com/smresponsibilities/ccp/main/install.ps1 | iex
 ccp set
-ccp start
-ccp autostart enable
+ccp autostart enable --now
 ```
-> **No Rust, no Cargo, no Git, and no WSL required.**
+> **No Rust, no Cargo, no Git, and no WSL required.** That's it! `ccp` will automatically roam and authenticate in the background on every boot.
 
 ---
 
@@ -211,3 +210,23 @@ For developers verifying the codebase: spins up local TCP mock servers simulatin
 ```bash
 cargo test --all-targets -- --nocapture
 ```
+
+---
+
+## Uninstallation
+
+If you ever want to completely remove `ccp` and your saved credentials:
+
+- **Windows (PowerShell)**:
+  ```powershell
+  ccp autostart disable
+  ccp stop
+  Remove-Item -Recurse -Force "$env:USERPROFILE\.ccp", "$env:USERPROFILE\.config\ccp" -ErrorAction SilentlyContinue
+  ```
+
+- **macOS / Linux**:
+  ```bash
+  ccp autostart disable
+  ccp stop
+  rm -rf ~/.local/bin/ccp ~/.config/ccp ~/Library/LaunchAgents/com.garvittsingla.ccp.plist ~/.config/systemd/user/ccp.service
+  ```
